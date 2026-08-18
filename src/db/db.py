@@ -67,23 +67,63 @@ def create_document(
     week: int | None = None,
     chapter: str | None = None,
 ) -> int:
-    """Insert one PDF's metadata and return its database ID."""
+    """Return one PDF's ID without duplicating an existing document row."""
+    document_id, _ = get_or_create_document(
+        connection,
+        course_id=course_id,
+        filename=filename,
+        source_type=source_type,
+        week=week,
+        chapter=chapter,
+    )
+    return document_id
+
+
+def get_or_create_document(
+    connection: sqlite3.Connection,
+    *,
+    course_id: int,
+    filename: str,
+    source_type: str,
+    week: int | None = None,
+    chapter: str | None = None,
+) -> tuple[int, bool]:
+    """Return a document ID and whether this call created it.
+
+    The ``(course_id, filename)`` unique constraint is the ingestion
+    idempotency key. Existing metadata is intentionally left unchanged:
+    re-ingesting a PDF means "skip" rather than silently overwriting it.
+    """
     cursor = connection.execute(
         """
         INSERT INTO documents (course_id, filename, source_type, week, chapter)
         VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(course_id, filename) DO NOTHING
         """,
         (course_id, filename, source_type, week, chapter),
     )
-    return int(cursor.lastrowid)
+    row = get_document(connection, course_id, filename)
+    assert row is not None
+    return int(row["document_id"]), cursor.rowcount == 1
 
 
 def insert_chunks(
     connection: sqlite3.Connection,
     document_id: int,
     chunks: Iterable[Chunk],
-) -> None:
-    """Store unembedded chunks. ``faiss_id`` stays NULL until embedding."""
+) -> int:
+    """Store unembedded chunks once, returning how many rows were inserted.
+
+    A document's chunks are treated as one immutable ingestion result. The
+    orchestration script only calls this for a new document; this guard also
+    prevents accidental duplicate chunk rows if the helper is called again.
+    """
+    existing_chunk = connection.execute(
+        "SELECT 1 FROM chunks WHERE document_id = ? LIMIT 1", (document_id,)
+    ).fetchone()
+    if existing_chunk is not None:
+        return 0
+
     rows = [
         (
             document_id,
@@ -103,3 +143,34 @@ def insert_chunks(
         """,
         rows,
     )
+    return len(rows)
+
+
+def get_chunks_missing_faiss_id(connection: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return every chunk that has not yet been added to the FAISS index."""
+    return connection.execute(
+        """
+        SELECT chunk_id, chunk_text
+        FROM chunks
+        WHERE faiss_id IS NULL
+        ORDER BY chunk_id
+        """
+    ).fetchall()
+
+
+def set_chunk_faiss_id(
+    connection: sqlite3.Connection, chunk_id: int, faiss_id: int
+) -> None:
+    """Link an already-added FAISS vector position back to its chunk row."""
+    cursor = connection.execute(
+        """
+        UPDATE chunks
+        SET faiss_id = ?
+        WHERE chunk_id = ? AND faiss_id IS NULL
+        """,
+        (faiss_id, chunk_id),
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError(
+            f"Could not assign FAISS ID {faiss_id} to unembedded chunk {chunk_id}."
+        )
