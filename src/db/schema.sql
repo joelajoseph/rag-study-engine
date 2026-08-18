@@ -1,5 +1,5 @@
 -- A course the student is taking (e.g. "CS 2110")
-CREATE TABLE courses (
+CREATE TABLE IF NOT EXISTS courses (
     course_id   INTEGER PRIMARY KEY AUTOINCREMENT,
     course_code TEXT NOT NULL UNIQUE,     -- e.g. "CS2110"
     course_name TEXT,                     -- e.g. "Data Structures"
@@ -7,7 +7,7 @@ CREATE TABLE courses (
 );
 
 -- A source document (one PDF)
-CREATE TABLE documents (
+CREATE TABLE IF NOT EXISTS documents (
     document_id   INTEGER PRIMARY KEY AUTOINCREMENT,
     course_id     INTEGER NOT NULL REFERENCES courses(course_id),
     filename      TEXT NOT NULL,
@@ -19,7 +19,7 @@ CREATE TABLE documents (
 );
 
 -- A chunk of text extracted from a document
-CREATE TABLE chunks (
+CREATE TABLE IF NOT EXISTS chunks (
     chunk_id     INTEGER PRIMARY KEY AUTOINCREMENT,
     document_id  INTEGER NOT NULL REFERENCES documents(document_id),
     chunk_text   TEXT NOT NULL,
@@ -27,8 +27,10 @@ CREATE TABLE chunks (
     page_end     INTEGER,
     chunk_index  INTEGER NOT NULL,        -- order within the document, 0-based
     token_count  INTEGER,
-    faiss_id     INTEGER NOT NULL UNIQUE  -- position of this chunk's vector in the FAISS index
+    -- NULL until Stage 1's embedding step assigns a position in FAISS.
+    -- UNIQUE still prevents two embedded chunks from pointing at one vector.
+    faiss_id     INTEGER UNIQUE
 );
 
-CREATE INDEX idx_chunks_document ON chunks(document_id);
-CREATE INDEX idx_chunks_faiss_id ON chunks(faiss_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_faiss_id ON chunks(faiss_id);
