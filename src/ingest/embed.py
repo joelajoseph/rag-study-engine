@@ -26,6 +26,25 @@ class EmbeddingResult:
     embedded_chunk_count: int
 
 
+def load_embedding_model() -> SentenceTransformer:
+    """Load the one local embedding model used by both indexing and search."""
+    try:
+        model = SentenceTransformer(EMBEDDING_MODEL_NAME, local_files_only=True)
+    except OSError as error:
+        raise RuntimeError(
+            f"Embedding model {EMBEDDING_MODEL_NAME!r} is not available locally. "
+            "Download it once while online, then rerun ingestion."
+        ) from error
+
+    model_dimension = model.get_embedding_dimension()
+    if model_dimension != EMBEDDING_DIMENSION:
+        raise RuntimeError(
+            f"{EMBEDDING_MODEL_NAME} produced {model_dimension} dimensions; "
+            f"expected {EMBEDDING_DIMENSION}."
+        )
+    return model
+
+
 def embed_missing_chunks(
     database_path: str | Path,
     index_directory: str | Path,
@@ -48,19 +67,7 @@ def embed_missing_chunks(
         if not chunks:
             return EmbeddingResult(embedded_chunk_count=0)
 
-        try:
-            model = SentenceTransformer(EMBEDDING_MODEL_NAME, local_files_only=True)
-        except OSError as error:
-            raise RuntimeError(
-                f"Embedding model {EMBEDDING_MODEL_NAME!r} is not available locally. "
-                "Download it once while online, then rerun ingestion."
-            ) from error
-        model_dimension = model.get_embedding_dimension()
-        if model_dimension != EMBEDDING_DIMENSION:
-            raise RuntimeError(
-                f"{EMBEDDING_MODEL_NAME} produced {model_dimension} dimensions; "
-                f"expected {EMBEDDING_DIMENSION}."
-            )
+        model = load_embedding_model()
 
         vectors = model.encode(
             [chunk["chunk_text"] for chunk in chunks],

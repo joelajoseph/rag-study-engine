@@ -174,3 +174,31 @@ def set_chunk_faiss_id(
         raise RuntimeError(
             f"Could not assign FAISS ID {faiss_id} to unembedded chunk {chunk_id}."
         )
+
+
+def clear_all_faiss_ids(connection: sqlite3.Connection) -> int:
+    """Remove every SQLite-to-FAISS link before rebuilding the whole index."""
+    cursor = connection.execute("UPDATE chunks SET faiss_id = NULL WHERE faiss_id IS NOT NULL")
+    return cursor.rowcount
+
+
+def get_chunk_by_faiss_id(
+    connection: sqlite3.Connection, faiss_id: int
+) -> sqlite3.Row | None:
+    """Resolve one FAISS result position to the chunk and document metadata."""
+    return connection.execute(
+        """
+        SELECT
+            chunks.chunk_text,
+            chunks.page_start,
+            chunks.page_end,
+            documents.filename,
+            documents.source_type,
+            courses.course_code
+        FROM chunks
+        JOIN documents ON documents.document_id = chunks.document_id
+        JOIN courses ON courses.course_id = documents.course_id
+        WHERE chunks.faiss_id = ?
+        """,
+        (faiss_id,),
+    ).fetchone()

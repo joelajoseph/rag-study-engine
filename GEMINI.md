@@ -7,7 +7,7 @@ pipelines, and local LLM tooling (Ollama). This project is explicitly a
 learning project, not just a deliverable.
 
 ## How to work
-- You (Codex) may write the actual code. The user does not need to type
+- You may write the actual code. The user does not need to type
   every line themselves.
 - Before or alongside writing code for a step, explain: what this step
   does, why it's needed at this point in the pipeline, and how it connects

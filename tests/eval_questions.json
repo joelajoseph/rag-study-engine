@@ -1,0 +1,32 @@
+[
+  {
+    "id": "q1",
+    "course": "CSCA48",
+    "question": "When was the C programming language developed?",
+    "expected_source": {
+      "filename": "chapter_1.pdf",
+      "page": 2
+    },
+    "notes": "Should retrieve the section introducing C."
+  },
+  {
+    "id": "q2",
+    "course": "CSCA48",
+    "question": "Who was the C programming language developed by?",
+    "expected_source": {
+      "filename": "chapter_1.pdf",
+      "page": 2
+    },
+    "notes": "Should retrieve the same chunk, or the chunk after of the last question."
+  },
+  {
+    "id": "q3",
+    "course": "CSCA48",
+    "question": "Where did the \"hello, world!\" greeting tradition come from?",
+    "expected_source": {
+      "filename": "chapter_1_2.pdf",
+      "page": 2
+    },
+    "notes": "Should retrieve the chunk about Saying Hello!"
+  }
+]

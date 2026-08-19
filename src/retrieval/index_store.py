@@ -53,6 +53,12 @@ class IndexStore:
         self._write_config()
         faiss.write_index(index, str(self.index_path))
 
+    def reset(self) -> None:
+        """Replace any existing vectors with an empty compatible L2 index."""
+        self.index_directory.mkdir(parents=True, exist_ok=True)
+        self.index = faiss.IndexFlatL2(self.dimension)
+        self.save()
+
     def add(self, vectors: np.ndarray) -> list[int]:
         """Add float32 vectors and return their assigned FAISS positions."""
         index = self._require_loaded_index()

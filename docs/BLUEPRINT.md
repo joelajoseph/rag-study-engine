@@ -4,8 +4,8 @@
 Local-first, adaptive study tool built on retrieval-augmented generation
 (RAG) over the user's own course materials (PDFs). No paid APIs — all
 embedding and LLM inference run locally. This document is the source of
-truth for architecture, stack, and milestones. See AGENTS.md for how
-Codex should work with the user (teaching style, scope discipline).
+truth for architecture, stack, and milestones. See GEMINI.md for how
+agents should work with the user (teaching style, scope discipline).
 
 ## Tech stack
 
