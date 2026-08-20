@@ -9,9 +9,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.ingest.chunk import Chunk, chunk_pages, estimate_token_count
+from src.ingest.extract import normalize_text
 
 
 class TestChunking(unittest.TestCase):
+    def test_normalize_text_ligatures(self) -> None:
+        raw_text = "e\ufb00ect and \ufb01le and \ufb02ow and o\ufb03ce and ba\ufb04e"
+        normalized = normalize_text(raw_text)
+        self.assertEqual(normalized, "effect and file and flow and office and baffle")
+
     def test_estimate_token_count(self) -> None:
         text = "Hello world this is a test"
         tokens = estimate_token_count(text)
@@ -45,3 +51,4 @@ class TestChunking(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
