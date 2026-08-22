@@ -218,6 +218,102 @@ Given a course and a question, the system returns a grounded answer
 with visible citations mapping to real filenames/pages, and explicitly
 says so when asked something not covered by ingested material.
 
-## Stages 3–5 (study mode, tracking, adaptive planner)
-Deferred — to be detailed once Stages 1–2 are built and working. See
-original project notes for high-level scope.
+## Stage 3: Study mode
+
+Study mode adds two interaction types on top of the existing retrieval and
+generation layers: **scoped Q&A** (structured, chapter-narrowed questions)
+and **quiz generation** (LLM-generated questions from a chapter's content,
+self-assessed against LLM-provided answers). Both are ephemeral — no
+sessions, questions, or answers are persisted. Persistence and performance
+tracking are explicitly out of scope here; see Stages 4-5.
+
+### Prerequisite: verify chapter metadata
+
+`documents.chapter` already exists in the schema but may not currently be
+populated by `scripts/ingest_course.py`. Before building on it, confirm
+whether ingested documents have a non-null `chapter` value. If not,
+`ingest_course.py` needs a small update (or existing rows need a manual
+backfill) before chapter-scoped features can work.
+
+### Known scope limit: chapter-level only
+
+The data model has no concept of *section* boundaries within a chapter —
+chunks carry `page_start`/`page_end` but nothing tying them to a heading or
+subsection. This is the same structural gap identified in Stage 2 (broad,
+section-title-level queries don't retrieve well). Stage 3 scopes both
+features to **chapter level only**. Section-level scoping remains a
+documented future item, dependent on the same heading-aware chunking work
+flagged in Stage 2.
+
+### Pipeline
+
+1. **Chapter-scoped retrieval** (`src/retrieval/search.py` or a new
+   `src/retrieval/fetch.py`):
+   - `get_chunks_by_chapter(course_code, chapter)`: direct SQL fetch of
+     *all* chunks for a given chapter — no vector search involved. This is
+     a different retrieval mode from Stage 2's semantic search: quiz
+     generation needs comprehensive chapter content, not top-k similarity
+     matches.
+   - Scoped Q&A reuses Stage 2's `search_chunks`, extended with an optional
+     `chapter` filter, following the same "search wide, filter after the
+     SQLite join" pattern already used for course filtering.
+
+2. **Scoped Q&A** (`src/generation/qa.py`, extended):
+   - `answer_question(question, course_code, chapter=None, ...)` — when
+     `chapter` is provided, retrieval is narrowed to that chapter before
+     the existing prompt-construction and distance-guardrail logic runs
+     unchanged.
+
+3. **Quiz generation** (new: `src/study/quiz.py`):
+   - `build_quiz_prompt(chunks, num_questions)`: constructs a prompt
+     instructing the model to generate `num_questions` questions strictly
+     grounded in the provided chapter content, each paired with its
+     answer and a source page reference. Same anti-hallucination framing
+     as Stage 2's `qa.py` — grounded only in provided context.
+   - `generate_quiz(course_code, chapter, num_questions=5)`: calls
+     `get_chunks_by_chapter`, builds the prompt, invokes
+     `ollama_client.generate`, parses the model's output into a structured
+     list.
+   - **Design tradeoff — context window**: concatenating an entire
+     chapter's chunks may exceed the model's usable context window,
+     depending on chapter length and Ollama's configured context size.
+     Approach TBD once tested against real chapter sizes — likely either
+     batching questions across sub-groups of chunks, or capping how much
+     chapter content is fed per generation call. Exact behavior tuned
+     empirically once real chapter sizes are tested, same approach as the
+     Stage 2 distance threshold.
+   - **Design tradeoff — grading**: no exact-match answer checking. The
+     quiz shows the model-generated answer after the user responds; the
+     user self-assesses. This is a deliberate simplicity choice for v1,
+     not an oversight — LLM-graded free-text comparison was considered and
+     deferred as unnecessary complexity at this stage.
+
+   Response shape:
+   ```python
+   [
+       {
+           "question": "...",
+           "answer": "...",
+           "source": {"filename": "...", "page_start": 4, "page_end": 4}
+       },
+       ...
+   ]
+   ```
+
+4. **CLI entrypoint** (new: `scripts/study.py`, following the pattern of
+   `scripts/ask.py`):
+   - Prompt for course code and chapter.
+   - Offer a choice: scoped Q&A loop, or quiz mode.
+   - Quiz mode: present one question at a time, wait for the user to
+     respond (any input), then reveal the model-provided answer and
+     source citation before moving to the next question.
+   - No persistence — closing the session discards everything.
+
+### Milestone 3 — acceptance criteria
+
+Given a course and a chapter, the user can either (a) ask questions
+answered only from that chapter's content with correct citations, or
+(b) receive a generated quiz grounded in that chapter's content, with
+answers and source pages revealed on request. Both paths correctly
+decline or flag when asked something outside the chapter's actual
+content, consistent with Stage 2's anti-hallucination behavior.
