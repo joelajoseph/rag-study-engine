@@ -73,6 +73,7 @@ def answer_question(
     database_path: str | Path = "data/db/study_engine.db",
     index_directory: str | Path = "data/db/faiss_index",
     *,
+    chapter: str | None = None,
     k: int = DEFAULT_RESULT_COUNT,
     distance_threshold: float | None = DEFAULT_DISTANCE_THRESHOLD,
     client: OllamaClient | None = None,
@@ -86,6 +87,7 @@ def answer_question(
         course_code: Course code identifier (e.g. 'CSCA48').
         database_path: Path to SQLite database.
         index_directory: Path to FAISS index directory.
+        chapter: Optional chapter identifier to scope search results.
         k: Maximum number of chunks to retrieve.
         distance_threshold: Maximum FAISS L2 distance allowed for a chunk to be considered relevant.
             If all chunks exceed this distance or if no chunks are found, the LLM call is skipped.
@@ -113,8 +115,10 @@ def answer_question(
         course_code=course_code,
         database_path=database_path,
         index_directory=index_directory,
+        chapter=chapter,
         k=k,
     )
+
 
     # Filter by distance threshold if provided
     if distance_threshold is not None:

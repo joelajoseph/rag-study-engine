@@ -24,14 +24,15 @@ def search_chunks(
     database_path: str | Path = "data/db/study_engine.db",
     index_directory: str | Path = "data/db/faiss_index",
     *,
+    chapter: str | None = None,
     k: int = DEFAULT_RESULT_COUNT,
     candidate_k: int = DEFAULT_CANDIDATE_COUNT,
-) -> list[dict[str, str | int | float]]:
-    """Return the nearest indexed chunks that belong to ``course_code``.
+) -> list[dict[str, str | int | float | None]]:
+    """Return the nearest indexed chunks that belong to ``course_code`` (and optionally ``chapter``).
 
     FAISS is searched globally for extra candidates. SQLite then resolves each
-    FAISS position and filters course membership, preserving FAISS's original
-    nearest-first order.
+    FAISS position and filters course (and optional chapter) membership,
+    preserving FAISS's original nearest-first order.
     """
     if not query.strip():
         raise ValueError("query must not be empty")
@@ -54,7 +55,7 @@ def search_chunks(
     index_store.load()
     distances, faiss_ids = index_store.search(query_vector, candidate_k)
 
-    results: list[dict[str, str | int | float]] = []
+    results: list[dict[str, str | int | float | None]] = []
     with closing(get_connection(database_path)) as connection:
         for distance, faiss_id in zip(distances[0], faiss_ids[0], strict=True):
             if faiss_id < 0:
@@ -62,6 +63,8 @@ def search_chunks(
 
             chunk = get_chunk_by_faiss_id(connection, int(faiss_id))
             if chunk is None or chunk["course_code"] != course_code:
+                continue
+            if chapter is not None and str(chunk["chapter"]) != str(chapter):
                 continue
 
             results.append(
@@ -71,6 +74,7 @@ def search_chunks(
                     "page_start": int(chunk["page_start"]),
                     "page_end": int(chunk["page_end"]),
                     "source_type": str(chunk["source_type"]),
+                    "chapter": str(chunk["chapter"]) if chunk["chapter"] is not None else None,
                     "distance": float(distance),
                 }
             )
@@ -78,3 +82,4 @@ def search_chunks(
                 break
 
     return results
+

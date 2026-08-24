@@ -22,6 +22,19 @@ from src.ingest.embed import embed_missing_chunks
 from src.ingest.extract import extract_pdf
 
 
+import re
+
+
+def infer_chapter_from_filename(filename: str) -> str | None:
+    """Attempt to infer a chapter identifier from a PDF filename."""
+    stem = Path(filename).stem
+    match = re.search(r"(?:chapter|ch)[_\s-]*([0-9a-zA-Z._-]+)", stem, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return None
+
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Ingest one PDF into the study database.")
     parser.add_argument("pdf_path", type=Path)
@@ -36,7 +49,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("lecture", "textbook", "tutorial", "notes"),
     )
     parser.add_argument("--week", type=int)
-    parser.add_argument("--chapter")
+    parser.add_argument(
+        "--chapter",
+        help="Chapter identifier. If omitted, will attempt to infer from filename.",
+    )
     parser.add_argument("--max-tokens", type=int, default=500)
     parser.add_argument("--overlap-tokens", type=int, default=50)
     parser.add_argument(
@@ -84,6 +100,20 @@ def main() -> None:
     args = build_parser().parse_args()
     course_code = args.course_code or args.pdf_path.parent.name
 
+    chapter = args.chapter
+    if not chapter:
+        inferred = infer_chapter_from_filename(args.pdf_path.name)
+        if inferred:
+            print(f"[Info] No --chapter provided. Inferred chapter '{inferred}' from '{args.pdf_path.name}'.")
+            chapter = inferred
+        else:
+            print(
+                f"[Error] Could not infer chapter from filename '{args.pdf_path.name}'. "
+                f"Please specify --chapter explicitly (e.g. --chapter 1).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     print("Stage 1/4: extracting PDF text and creating chunks...")
     pages = extract_pdf(args.pdf_path)
     chunks = chunk_pages(
@@ -111,7 +141,7 @@ def main() -> None:
             filename=args.pdf_path.name,
             source_type=args.source_type,
             week=args.week,
-            chapter=args.chapter,
+            chapter=chapter,
         )
 
         if not was_created:

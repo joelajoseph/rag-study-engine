@@ -194,6 +194,7 @@ def get_chunk_by_faiss_id(
             chunks.page_end,
             documents.filename,
             documents.source_type,
+            documents.chapter,
             courses.course_code
         FROM chunks
         JOIN documents ON documents.document_id = chunks.document_id
@@ -202,3 +203,48 @@ def get_chunk_by_faiss_id(
         """,
         (faiss_id,),
     ).fetchone()
+
+
+def get_chunks_by_chapter(
+    connection: sqlite3.Connection, course_code: str, chapter: str
+) -> list[sqlite3.Row]:
+    """Return all chunks belonging to a specific course and chapter, ordered sequentially."""
+    return connection.execute(
+        """
+        SELECT
+            chunks.chunk_id,
+            chunks.chunk_text,
+            chunks.page_start,
+            chunks.page_end,
+            chunks.chunk_index,
+            chunks.token_count,
+            documents.filename,
+            documents.source_type,
+            documents.chapter,
+            courses.course_code
+        FROM chunks
+        JOIN documents ON documents.document_id = chunks.document_id
+        JOIN courses ON courses.course_id = documents.course_id
+        WHERE courses.course_code = ? AND documents.chapter = ?
+        ORDER BY documents.document_id, chunks.chunk_index
+        """,
+        (course_code, str(chapter)),
+    ).fetchall()
+
+
+def get_chapters_for_course(
+    connection: sqlite3.Connection, course_code: str
+) -> list[str]:
+    """Return all distinct non-null chapter names available for a course."""
+    rows = connection.execute(
+        """
+        SELECT DISTINCT documents.chapter
+        FROM documents
+        JOIN courses ON courses.course_id = documents.course_id
+        WHERE courses.course_code = ? AND documents.chapter IS NOT NULL
+        ORDER BY documents.chapter
+        """,
+        (course_code,),
+    ).fetchall()
+    return [str(row["chapter"]) for row in rows]
+
