@@ -317,3 +317,85 @@ answered only from that chapter's content with correct citations, or
 answers and source pages revealed on request. Both paths correctly
 decline or flag when asked something outside the chapter's actual
 content, consistent with Stage 2's anti-hallucination behavior.
+
+## Stage 4: Performance tracking
+
+Stage 4 adds durable performance tracking on top of Stage 3's quiz mode.
+Quiz *attempts* become persistent; scoped Q&A sessions remain untracked,
+since there's no fixed answer to self-assess against in a free-form Q&A
+exchange the way there is in a quiz question.
+
+### Known scope note: topic granularity
+
+The data model has no concept of section/topic below the chapter level
+(same structural gap flagged in Stages 2-3). Rather than waiting on
+heading-aware chunking, quiz generation is extended to have the LLM emit
+an informal `topic` label per question, drawn from the same chapter
+content it already processes. This is explicitly free-text and
+inconsistent across generations, not a controlled vocabulary — useful
+for surfacing patterns, not for precise reporting.
+
+### Schema addition (`src/db/schema.sql`)
+
+```sql
+CREATE TABLE quiz_attempts (
+    attempt_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id        INTEGER NOT NULL REFERENCES documents(document_id),
+    chapter            TEXT NOT NULL,        -- denormalized, insulates history
+                                              -- from a document's chapter tag changing
+    topic              TEXT,                 -- LLM-generated, informal, nullable
+    question_text      TEXT NOT NULL,
+    model_answer        TEXT NOT NULL,
+    self_correct        TEXT NOT NULL,        -- 'correct' | 'partial' | 'incorrect'
+    confidence          INTEGER NOT NULL,     -- 1-5, captured AFTER reveal
+    source_filename     TEXT,
+    source_page_start    INTEGER,
+    source_page_end      INTEGER,
+    attempted_at        TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_attempts_chapter ON quiz_attempts(document_id, chapter);
+CREATE INDEX idx_attempts_topic ON quiz_attempts(topic);
+```
+
+### Pipeline
+
+1. **Quiz generation (`src/study/quiz.py`, extended):** `build_quiz_prompt`
+   extended so the model returns `{excerpt, question, answer, topic}` — a
+   short informal topic label per question, generated from the same
+   chapter content it already sees. `parse_quiz_response` treats a
+   missing/malformed `topic` as a soft failure: null it out and keep the
+   question, rather than dropping the whole item — consistent with Stage
+   3's "don't silently over-penalize" pattern, but scoped to just this
+   one field.
+
+2. **CLI capture (`scripts/study.py`, extended):** after the model's
+   answer is revealed, prompt once for self-assessed correctness
+   (correct/partial/incorrect) and once for retrospective confidence
+   (1-5), then write the attempt. Confidence is captured *after* the
+   reveal rather than before — this trades away a calibration signal
+   (can't detect "confidently wrong" patterns as directly) in exchange
+   for a single CLI interruption per question instead of two.
+
+3. **DB layer (`src/db/db.py`, extended):** `record_quiz_attempt(...)`,
+   `get_attempts_by_chapter(course_code, chapter)`,
+   `get_attempts_summary(course_code)`. Raw reads only — no scoring logic
+   here, per the existing "all DB access through db.py" convention.
+
+4. **Scoring (`src/study/scoring.py`, new):** deterministic
+   `chapter_mastery_score(attempts)` — a weighted combination of
+   correctness rate (correct=1, partial=0.5, incorrect=0), mean
+   confidence, and recency decay. Computed on-the-fly from raw rows, not
+   cached, to avoid a second source of truth going stale. Weights are
+   placeholder constants pending empirical tuning, same pattern as the
+   Stage 2 distance threshold and Stage 3 quiz-context budget.
+
+5. **Out of scope for v1:** response-time/behavioral pattern tracking
+   from the original note — no CLI instrumentation for this yet.
+
+### Milestone 4 — acceptance criteria
+
+After completing a quiz, self-assessed correctness (3-way), retrospective
+confidence, and an informal topic tag are persisted per question and
+queryable by chapter and topic. A chapter-level mastery score can be
+computed from stored attempts via a documented, deterministic weighted
+formula — no ML, no hidden heuristics.
