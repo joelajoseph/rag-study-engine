@@ -34,3 +34,22 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_faiss_id ON chunks(faiss_id);
+
+-- Practice quiz attempts for performance tracking
+CREATE TABLE IF NOT EXISTS quiz_attempts (
+    attempt_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id       INTEGER NOT NULL REFERENCES documents(document_id),
+    chapter           TEXT NOT NULL,        -- denormalized, insulates history from doc chapter changes
+    topic             TEXT,                 -- LLM-generated, informal, nullable
+    question_text     TEXT NOT NULL,
+    model_answer      TEXT NOT NULL,
+    self_correct      TEXT NOT NULL,        -- 'correct' | 'partial' | 'incorrect'
+    confidence        INTEGER NOT NULL,     -- 1-5, captured AFTER reveal
+    source_filename   TEXT,
+    source_page_start INTEGER,
+    source_page_end   INTEGER,
+    attempted_at      TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_attempts_chapter ON quiz_attempts(document_id, chapter);
+CREATE INDEX IF NOT EXISTS idx_attempts_topic ON quiz_attempts(topic);

@@ -167,9 +167,44 @@ class TestQuizGeneration(unittest.TestCase):
         )
         items = parse_quiz_response(raw, chunks=chunks)
         self.assertEqual(len(items), 3)
-        self.assertEqual(items[0]["source"], {"filename": "chapter_1.pdf", "page_start": 1, "page_end": 2})
-        self.assertEqual(items[1]["source"], {"filename": "chapter_1.pdf", "page_start": 4, "page_end": 5})
-        self.assertEqual(items[2]["source"], {"filename": "chapter_1.pdf", "page_start": 8, "page_end": 9})
+        self.assertEqual(items[0]["source"], {"document_id": None, "filename": "chapter_1.pdf", "page_start": 1, "page_end": 2})
+        self.assertEqual(items[1]["source"], {"document_id": None, "filename": "chapter_1.pdf", "page_start": 4, "page_end": 5})
+        self.assertEqual(items[2]["source"], {"document_id": None, "filename": "chapter_1.pdf", "page_start": 8, "page_end": 9})
+
+    def test_parse_quiz_response_with_topics(self) -> None:
+        chunks = [
+            {"document_id": 1, "filename": "chapter_1.pdf", "page_start": 1, "page_end": 2},
+            {"document_id": 1, "filename": "chapter_1.pdf", "page_start": 4, "page_end": 5},
+            {"document_id": 1, "filename": "chapter_1.pdf", "page_start": 8, "page_end": 9},
+        ]
+        raw = json.dumps(
+            [
+                {
+                    "excerpt": 1,
+                    "topic": "Pointer Basics",
+                    "question": "What is a pointer?",
+                    "answer": "A variable storing an address.",
+                },
+                {
+                    "excerpt": 2,
+                    # topic missing: should soft-fail to None
+                    "question": "What is malloc?",
+                    "answer": "Dynamic memory allocation.",
+                },
+                {
+                    "excerpt": 3,
+                    "topic": 12345,  # non-string topic: should soft-fail to None
+                    "question": "How to free memory?",
+                    "answer": "Using the free() function.",
+                },
+            ]
+        )
+        items = parse_quiz_response(raw, chunks=chunks)
+        self.assertEqual(len(items), 3)
+        self.assertEqual(items[0]["topic"], "Pointer Basics")
+        self.assertEqual(items[0]["source"]["document_id"], 1)
+        self.assertIsNone(items[1]["topic"])
+        self.assertIsNone(items[2]["topic"])
 
     def test_parse_quiz_response_positional_fallback(self) -> None:
         chunks = [
@@ -186,8 +221,8 @@ class TestQuizGeneration(unittest.TestCase):
         items = parse_quiz_response(raw, chunks=chunks)
         self.assertEqual(len(items), 2)
         # First question gets first chunk, second gets second chunk
-        self.assertEqual(items[0]["source"], {"filename": "chapter_1.pdf", "page_start": 1, "page_end": 2})
-        self.assertEqual(items[1]["source"], {"filename": "chapter_1.pdf", "page_start": 6, "page_end": 7})
+        self.assertEqual(items[0]["source"], {"document_id": None, "filename": "chapter_1.pdf", "page_start": 1, "page_end": 2})
+        self.assertEqual(items[1]["source"], {"document_id": None, "filename": "chapter_1.pdf", "page_start": 6, "page_end": 7})
 
     def test_parse_quiz_response_code_fence(self) -> None:
         chunks = [{"filename": "ch1.pdf", "page_start": 2, "page_end": 2}]
@@ -197,6 +232,7 @@ class TestQuizGeneration(unittest.TestCase):
             "[\n"
             "  {\n"
             '    "excerpt": 1,\n'
+            '    "topic": "Pointers",\n'
             '    "question": "What is a pointer?",\n'
             '    "answer": "A variable that holds an address."\n'
             "  }\n"
@@ -206,6 +242,7 @@ class TestQuizGeneration(unittest.TestCase):
         items = parse_quiz_response(raw, chunks=chunks)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["question"], "What is a pointer?")
+        self.assertEqual(items[0]["topic"], "Pointers")
         self.assertEqual(items[0]["source"]["filename"], "ch1.pdf")
         self.assertEqual(items[0]["source"]["page_start"], 2)
 
@@ -214,42 +251,131 @@ class TestQuizGeneration(unittest.TestCase):
             parse_quiz_response("Not valid JSON output")
 
 
+class TestQuizAttemptDatabaseQueries(unittest.TestCase):
+    def setUp(self) -> None:
+        self.connection = sqlite3.connect(":memory:")
+        self.connection.row_factory = sqlite3.Row
+        self.connection.execute("PRAGMA foreign_keys = ON")
+        schema_path = PROJECT_ROOT / "src" / "db" / "schema.sql"
+        self.connection.executescript(schema_path.read_text(encoding="utf-8"))
 
-    @patch("src.study.quiz.get_chunks_by_chapter")
-    def test_generate_quiz_end_to_end(self, mock_get_chunks: MagicMock) -> None:
-        mock_get_chunks.return_value = [
-            {
-                "chunk_text": "Pointers store memory addresses.",
-                "page_start": 4,
-                "page_end": 4,
-                "token_count": 100,
-                "filename": "chapter_1.pdf",
-            }
-        ]
-        mock_client = MagicMock()
-        mock_client.generate.return_value = json.dumps(
-            [
-                {
-                    "excerpt": 1,
-                    "question": "What do pointers store?",
-                    "answer": "Memory addresses.",
-                }
-            ]
+        # Seed courses and documents
+        self.connection.execute("INSERT INTO courses (course_code, course_name) VALUES ('CSCA48', 'Intro CS')")
+        self.connection.execute(
+            "INSERT INTO documents (course_id, filename, source_type, chapter) VALUES (1, 'chapter_1.pdf', 'textbook', '1')"
+        )
+        self.connection.execute(
+            "INSERT INTO documents (course_id, filename, source_type, chapter) VALUES (1, 'chapter_2.pdf', 'textbook', '2')"
+        )
+        self.connection.commit()
+
+    def tearDown(self) -> None:
+        self.connection.close()
+
+    def test_record_and_get_quiz_attempts(self) -> None:
+        from src.db.db import (
+            get_attempts_by_chapter,
+            get_attempts_summary,
+            record_quiz_attempt,
         )
 
-
-        quiz = generate_quiz(
-            course_code="CSCA48",
+        attempt_id1 = record_quiz_attempt(
+            self.connection,
+            document_id=1,
             chapter="1",
-            num_questions=1,
-            client=mock_client,
+            question_text="What is a pointer?",
+            model_answer="A memory address variable.",
+            self_correct="correct",
+            confidence=5,
+            topic="Pointers",
+            source_filename="chapter_1.pdf",
+            source_page_start=2,
+            source_page_end=3,
+            attempted_at="2026-08-26 10:00:00",
+        )
+        self.assertGreater(attempt_id1, 0)
+
+        attempt_id2 = record_quiz_attempt(
+            self.connection,
+            document_id=1,
+            chapter="1",
+            question_text="What does malloc return?",
+            model_answer="A void pointer.",
+            self_correct="partial",
+            confidence=3,
+            topic="Memory",
+            source_filename="chapter_1.pdf",
+            source_page_start=4,
+            source_page_end=4,
+            attempted_at="2026-08-26 10:05:00",
+        )
+        self.assertGreater(attempt_id2, attempt_id1)
+
+        # Record for chapter 2
+        record_quiz_attempt(
+            self.connection,
+            document_id=2,
+            chapter="2",
+            question_text="What is a struct?",
+            model_answer="A custom data type.",
+            self_correct="incorrect",
+            confidence=2,
+            topic="Structs",
+            source_filename="chapter_2.pdf",
+            attempted_at="2026-08-26 11:00:00",
         )
 
-        self.assertEqual(len(quiz), 1)
-        self.assertEqual(quiz[0]["question"], "What do pointers store?")
-        self.assertEqual(quiz[0]["answer"], "Memory addresses.")
-        self.assertEqual(quiz[0]["source"]["filename"], "chapter_1.pdf")
-        mock_client.generate.assert_called_once()
+        # Query chapter 1 attempts
+        ch1_attempts = get_attempts_by_chapter(self.connection, "CSCA48", "1")
+        self.assertEqual(len(ch1_attempts), 2)
+        self.assertEqual(ch1_attempts[0]["question_text"], "What is a pointer?")
+        self.assertEqual(ch1_attempts[0]["self_correct"], "correct")
+        self.assertEqual(ch1_attempts[0]["confidence"], 5)
+        self.assertEqual(ch1_attempts[0]["topic"], "Pointers")
+        self.assertEqual(ch1_attempts[1]["self_correct"], "partial")
+
+        # Query summary for entire course
+        all_attempts = get_attempts_summary(self.connection, "CSCA48")
+        self.assertEqual(len(all_attempts), 3)
+        # Should be ordered newest first
+        self.assertEqual(all_attempts[0]["chapter"], "2")
+        self.assertEqual(all_attempts[1]["chapter"], "1")
+
+    def test_record_quiz_attempt_validations(self) -> None:
+        from src.db.db import record_quiz_attempt
+
+        with self.assertRaises(ValueError):
+            record_quiz_attempt(
+                self.connection,
+                document_id=1,
+                chapter="1",
+                question_text="Q",
+                model_answer="A",
+                self_correct="invalid_choice",  # Must be correct/partial/incorrect
+                confidence=4,
+            )
+
+        with self.assertRaises(ValueError):
+            record_quiz_attempt(
+                self.connection,
+                document_id=1,
+                chapter="1",
+                question_text="Q",
+                model_answer="A",
+                self_correct="correct",
+                confidence=0,  # Must be 1-5
+            )
+
+        with self.assertRaises(ValueError):
+            record_quiz_attempt(
+                self.connection,
+                document_id=1,
+                chapter="1",
+                question_text="Q",
+                model_answer="A",
+                self_correct="correct",
+                confidence=6,  # Must be 1-5
+            )
 
 
 class TestScopedQA(unittest.TestCase):

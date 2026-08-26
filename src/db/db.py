@@ -218,6 +218,7 @@ def get_chunks_by_chapter(
             chunks.page_end,
             chunks.chunk_index,
             chunks.token_count,
+            documents.document_id,
             documents.filename,
             documents.source_type,
             documents.chapter,
@@ -247,4 +248,138 @@ def get_chapters_for_course(
         (course_code,),
     ).fetchall()
     return [str(row["chapter"]) for row in rows]
+
+
+def record_quiz_attempt(
+    connection: sqlite3.Connection,
+    *,
+    document_id: int,
+    chapter: str,
+    question_text: str,
+    model_answer: str,
+    self_correct: str,
+    confidence: int,
+    topic: str | None = None,
+    source_filename: str | None = None,
+    source_page_start: int | None = None,
+    source_page_end: int | None = None,
+    attempted_at: str | None = None,
+) -> int:
+    """Insert a single practice quiz attempt and return its attempt_id."""
+    valid_correctness = {"correct", "partial", "incorrect"}
+    if self_correct not in valid_correctness:
+        raise ValueError(
+            f"Invalid self_correct value '{self_correct}'. Must be one of {valid_correctness}."
+        )
+    if not (1 <= confidence <= 5):
+        raise ValueError(f"Confidence rating must be between 1 and 5 (got {confidence}).")
+
+    if attempted_at is not None:
+        cursor = connection.execute(
+            """
+            INSERT INTO quiz_attempts (
+                document_id, chapter, topic, question_text, model_answer,
+                self_correct, confidence, source_filename, source_page_start,
+                source_page_end, attempted_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                document_id,
+                str(chapter),
+                topic,
+                question_text,
+                model_answer,
+                self_correct,
+                confidence,
+                source_filename,
+                source_page_start,
+                source_page_end,
+                attempted_at,
+            ),
+        )
+    else:
+        cursor = connection.execute(
+            """
+            INSERT INTO quiz_attempts (
+                document_id, chapter, topic, question_text, model_answer,
+                self_correct, confidence, source_filename, source_page_start,
+                source_page_end
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                document_id,
+                str(chapter),
+                topic,
+                question_text,
+                model_answer,
+                self_correct,
+                confidence,
+                source_filename,
+                source_page_start,
+                source_page_end,
+            ),
+        )
+    return int(cursor.lastrowid)
+
+
+def get_attempts_by_chapter(
+    connection: sqlite3.Connection, course_code: str, chapter: str
+) -> list[sqlite3.Row]:
+    """Return all quiz attempts for a course and chapter, ordered chronologically."""
+    return connection.execute(
+        """
+        SELECT
+            quiz_attempts.attempt_id,
+            quiz_attempts.document_id,
+            quiz_attempts.chapter,
+            quiz_attempts.topic,
+            quiz_attempts.question_text,
+            quiz_attempts.model_answer,
+            quiz_attempts.self_correct,
+            quiz_attempts.confidence,
+            quiz_attempts.source_filename,
+            quiz_attempts.source_page_start,
+            quiz_attempts.source_page_end,
+            quiz_attempts.attempted_at,
+            courses.course_code
+        FROM quiz_attempts
+        JOIN documents ON documents.document_id = quiz_attempts.document_id
+        JOIN courses ON courses.course_id = documents.course_id
+        WHERE courses.course_code = ? AND quiz_attempts.chapter = ?
+        ORDER BY quiz_attempts.attempted_at ASC, quiz_attempts.attempt_id ASC
+        """,
+        (course_code, str(chapter)),
+    ).fetchall()
+
+
+def get_attempts_summary(
+    connection: sqlite3.Connection, course_code: str
+) -> list[sqlite3.Row]:
+    """Return all quiz attempts for a course across chapters, ordered newest first."""
+    return connection.execute(
+        """
+        SELECT
+            quiz_attempts.attempt_id,
+            quiz_attempts.document_id,
+            quiz_attempts.chapter,
+            quiz_attempts.topic,
+            quiz_attempts.question_text,
+            quiz_attempts.model_answer,
+            quiz_attempts.self_correct,
+            quiz_attempts.confidence,
+            quiz_attempts.source_filename,
+            quiz_attempts.source_page_start,
+            quiz_attempts.source_page_end,
+            quiz_attempts.attempted_at,
+            courses.course_code
+        FROM quiz_attempts
+        JOIN documents ON documents.document_id = quiz_attempts.document_id
+        JOIN courses ON courses.course_id = documents.course_id
+        WHERE courses.course_code = ?
+        ORDER BY quiz_attempts.attempted_at DESC, quiz_attempts.attempt_id DESC
+        """,
+        (course_code,),
+    ).fetchall()
 

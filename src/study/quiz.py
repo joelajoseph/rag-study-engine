@@ -89,17 +89,20 @@ def build_quiz_prompt(chunks: list[dict[str, Any]], num_questions: int = 5) -> s
         "Rules:\n"
         "- Every question and answer must be strictly grounded in its corresponding excerpt.\n"
         "- Do NOT introduce external facts or guess beyond what is explicitly stated.\n"
+        "- Provide a short, informal topic label (1-4 words) describing the concept tested.\n"
         "- Provide clear, concise answers.\n"
-        "- Output your response as a single valid JSON array of objects with keys 'excerpt', 'question', and 'answer'.\n\n"
+        "- Output your response as a single valid JSON array of objects with keys 'excerpt', 'topic', 'question', and 'answer'.\n\n"
         "Required JSON Output Format:\n"
         "[\n"
         "  {\n"
         '    "excerpt": 1,\n'
+        '    "topic": "Pointer Basics",\n'
         '    "question": "What is ...?",\n'
         '    "answer": "It is ..."\n'
         "  },\n"
         "  {\n"
         '    "excerpt": 2,\n'
+        '    "topic": "Dynamic Allocation",\n'
         '    "question": "How do you ...?",\n'
         '    "answer": "By ..."\n'
         "  }\n"
@@ -166,6 +169,10 @@ def parse_quiz_response(
         if not question or not answer:
             continue
 
+        # Informal topic parsing (soft-failure: keep question if topic is missing or invalid)
+        raw_topic = item.get("topic")
+        topic = raw_topic.strip() if isinstance(raw_topic, str) and raw_topic.strip() else None
+
         # Deterministic source resolution via Python:
         # 1. Check if model provided a valid excerpt index
         excerpt_idx = extract_excerpt_index(item)
@@ -178,6 +185,7 @@ def parse_quiz_response(
             target_chunk = {}
 
         source = {
+            "document_id": target_chunk.get("document_id"),
             "filename": str(target_chunk.get("filename", "")),
             "page_start": int(target_chunk.get("page_start", 0)),
             "page_end": int(target_chunk.get("page_end", 0)),
@@ -187,6 +195,7 @@ def parse_quiz_response(
             {
                 "question": question,
                 "answer": answer,
+                "topic": topic,
                 "source": source,
             }
         )

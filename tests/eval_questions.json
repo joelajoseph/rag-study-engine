@@ -22,11 +22,11 @@
   {
     "id": "q3",
     "course": "CSCA48",
-    "question": "Where did the \"hello, world!\" greeting tradition come from?",
+    "question": "What file extension do C programs use?",
     "expected_source": {
-      "filename": "chapter_1_2.pdf",
-      "page": 2
+      "filename": "chapter_1.pdf",
+      "page": 3
     },
-    "notes": "Should retrieve the chunk about Saying Hello!"
+    "notes": "Should retrieve the section introducing C programs as text files."
   }
 ]
