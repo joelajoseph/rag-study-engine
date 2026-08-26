@@ -217,10 +217,15 @@ def run_quiz_mode(
         print(item["answer"])
 
         source = item.get("source", {})
-        p_start = source.get("page_start", 0)
-        p_end = source.get("page_end", 0)
-        page_str = f"page {p_start}" if p_start == p_end else f"pages {p_start}-{p_end}"
-        print(f"\nSource Reference: {source.get('filename', 'doc')} ({page_str})")
+        filename = source.get("filename") or "doc"
+        p_start = int(source.get("page_start") or 0)
+        p_end = int(source.get("page_end") or 0)
+        if p_start > 0:
+            page_str = f"page {p_start}" if p_start == p_end else f"pages {p_start}-{p_end}"
+            print(f"\nSource Reference: {filename} ({page_str})")
+        else:
+            print(f"\nSource Reference: {filename}")
+
 
         if i < len(quiz_items):
             try:

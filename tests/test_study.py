@@ -20,11 +20,14 @@ from src.db.db import (
 from src.generation.qa import answer_question
 from src.study.quiz import (
     build_quiz_prompt,
+    extract_excerpt_index,
     format_chunk_page_range,
     generate_quiz,
     parse_quiz_response,
     select_quiz_chunks,
 )
+
+
 
 
 class TestChapterInference(unittest.TestCase):
@@ -118,51 +121,99 @@ class TestQuizGeneration(unittest.TestCase):
 
     def test_build_quiz_prompt(self) -> None:
         chunks = [
-            {"filename": "ch1.pdf", "page_start": 2, "page_end": 3, "chunk_text": "Pointers hold addresses."}
+            {"filename": "ch1.pdf", "page_start": 2, "page_end": 3, "chunk_text": "Pointers hold addresses."},
+            {"filename": "ch1.pdf", "page_start": 4, "page_end": 5, "chunk_text": "Malloc allocates memory."},
+            {"filename": "ch1.pdf", "page_start": 6, "page_end": 7, "chunk_text": "Free releases memory."},
         ]
         prompt = build_quiz_prompt(chunks, num_questions=3)
         self.assertIn("exactly 3 practice questions", prompt)
         self.assertIn("[Excerpt 1: ch1.pdf, pages 2-3]", prompt)
+        self.assertIn("[Excerpt 2: ch1.pdf, pages 4-5]", prompt)
         self.assertIn("Pointers hold addresses.", prompt)
         self.assertIn("Required JSON Output Format", prompt)
 
-    def test_parse_quiz_response_valid_json(self) -> None:
+
+    def test_extract_excerpt_index(self) -> None:
+        self.assertEqual(extract_excerpt_index({"excerpt": 2}), 2)
+        self.assertEqual(extract_excerpt_index({"excerpt": "Excerpt 3"}), 3)
+        self.assertEqual(extract_excerpt_index({"source": "4"}), 4)
+        self.assertEqual(extract_excerpt_index({"source": {"excerpt": 5}}), 5)
+        self.assertIsNone(extract_excerpt_index({"other": "field"}))
+
+    def test_parse_quiz_response_with_excerpts(self) -> None:
+        chunks = [
+            {"filename": "chapter_1.pdf", "page_start": 1, "page_end": 2},
+            {"filename": "chapter_1.pdf", "page_start": 4, "page_end": 5},
+            {"filename": "chapter_1.pdf", "page_start": 8, "page_end": 9},
+        ]
         raw = json.dumps(
             [
                 {
+                    "excerpt": 1,
+                    "question": "What is a pointer?",
+                    "answer": "A variable storing an address.",
+                },
+                {
+                    "excerpt": 2,
                     "question": "What is malloc?",
                     "answer": "Dynamic memory allocation.",
-                    "source": {"filename": "ch1.pdf", "page_start": 5, "page_end": 5},
-                }
+                },
+                {
+                    "excerpt": 3,
+                    "question": "How to free memory?",
+                    "answer": "Using the free() function.",
+                },
             ]
         )
-        items = parse_quiz_response(raw)
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["question"], "What is malloc?")
-        self.assertEqual(items[0]["answer"], "Dynamic memory allocation.")
-        self.assertEqual(items[0]["source"]["filename"], "ch1.pdf")
-        self.assertEqual(items[0]["source"]["page_start"], 5)
+        items = parse_quiz_response(raw, chunks=chunks)
+        self.assertEqual(len(items), 3)
+        self.assertEqual(items[0]["source"], {"filename": "chapter_1.pdf", "page_start": 1, "page_end": 2})
+        self.assertEqual(items[1]["source"], {"filename": "chapter_1.pdf", "page_start": 4, "page_end": 5})
+        self.assertEqual(items[2]["source"], {"filename": "chapter_1.pdf", "page_start": 8, "page_end": 9})
+
+    def test_parse_quiz_response_positional_fallback(self) -> None:
+        chunks = [
+            {"filename": "chapter_1.pdf", "page_start": 1, "page_end": 2},
+            {"filename": "chapter_1.pdf", "page_start": 6, "page_end": 7},
+        ]
+        # LLM omitted 'excerpt' key entirely
+        raw = json.dumps(
+            [
+                {"question": "Q1", "answer": "A1"},
+                {"question": "Q2", "answer": "A2"},
+            ]
+        )
+        items = parse_quiz_response(raw, chunks=chunks)
+        self.assertEqual(len(items), 2)
+        # First question gets first chunk, second gets second chunk
+        self.assertEqual(items[0]["source"], {"filename": "chapter_1.pdf", "page_start": 1, "page_end": 2})
+        self.assertEqual(items[1]["source"], {"filename": "chapter_1.pdf", "page_start": 6, "page_end": 7})
 
     def test_parse_quiz_response_code_fence(self) -> None:
+        chunks = [{"filename": "ch1.pdf", "page_start": 2, "page_end": 2}]
         raw = (
             "Here is the quiz:\n"
             "```json\n"
             "[\n"
             "  {\n"
+            '    "excerpt": 1,\n'
             '    "question": "What is a pointer?",\n'
-            '    "answer": "A variable that holds an address.",\n'
-            '    "source": {"filename": "ch1.pdf", "page_start": 2, "page_end": 2}\n'
+            '    "answer": "A variable that holds an address."\n'
             "  }\n"
             "]\n"
             "```"
         )
-        items = parse_quiz_response(raw)
+        items = parse_quiz_response(raw, chunks=chunks)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["question"], "What is a pointer?")
+        self.assertEqual(items[0]["source"]["filename"], "ch1.pdf")
+        self.assertEqual(items[0]["source"]["page_start"], 2)
 
     def test_parse_quiz_response_invalid(self) -> None:
         with self.assertRaises(ValueError):
             parse_quiz_response("Not valid JSON output")
+
+
 
     @patch("src.study.quiz.get_chunks_by_chapter")
     def test_generate_quiz_end_to_end(self, mock_get_chunks: MagicMock) -> None:
@@ -179,12 +230,13 @@ class TestQuizGeneration(unittest.TestCase):
         mock_client.generate.return_value = json.dumps(
             [
                 {
+                    "excerpt": 1,
                     "question": "What do pointers store?",
                     "answer": "Memory addresses.",
-                    "source": {"filename": "chapter_1.pdf", "page_start": 4, "page_end": 4},
                 }
             ]
         )
+
 
         quiz = generate_quiz(
             course_code="CSCA48",

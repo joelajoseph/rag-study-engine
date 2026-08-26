@@ -28,14 +28,14 @@ def format_chunk_page_range(chunk: dict[str, Any]) -> str:
 def select_quiz_chunks(
     chunks: list[dict[str, Any]],
     *,
+    num_questions: int | None = None,
     max_tokens: int = DEFAULT_MAX_QUIZ_TOKENS,
     max_chunks: int = DEFAULT_MAX_QUIZ_CHUNKS,
 ) -> list[dict[str, Any]]:
     """Select representative chunks from a chapter without exceeding context budget.
 
-    If the chapter's total tokens exceed max_tokens or chunk count exceeds max_chunks,
-    chunks are uniformly sampled across the chapter to preserve beginning-to-end topical coverage.
-    Detailed logging reports what chunks and page ranges were selected.
+    If num_questions is provided, targets min(num_questions, max_chunks, len(chunks))
+    evenly sampled across the chapter to ensure each question is paired with a distinct page span.
     """
     if not chunks:
         return []
@@ -43,11 +43,16 @@ def select_quiz_chunks(
     total_tokens = sum(int(c.get("token_count") or 500) for c in chunks)
     total_count = len(chunks)
 
-    if total_tokens <= max_tokens and total_count <= max_chunks:
+    # Determine desired chunk count
+    if num_questions is not None and num_questions > 0:
+        target_count = min(num_questions, max_chunks, total_count)
+    else:
+        target_count = min(max_chunks, total_count)
+
+    if total_tokens <= max_tokens and total_count <= target_count:
         selected = chunks
     else:
-        # Uniformly sample across the chapter
-        target_count = min(max_chunks, total_count)
+        # Uniformly stride-sample across the chapter
         step = total_count / target_count
         selected_indices = [int(i * step) for i in range(target_count)]
         selected = [chunks[i] for i in selected_indices]
@@ -79,25 +84,24 @@ def build_quiz_prompt(chunks: list[dict[str, Any]], num_questions: int = 5) -> s
 
     return (
         "You are an expert tutor creating a practice study quiz for a student.\n"
-        f"Based ONLY on the provided course material excerpts below, generate exactly {num_questions} "
-        "practice questions that test core concepts, definitions, and mechanisms.\n\n"
+        f"Based ONLY on the provided course material excerpts below, generate exactly {len(chunks)} "
+        "practice questions (one question per excerpt) that test core concepts, definitions, and mechanisms.\n\n"
         "Rules:\n"
-        "- Every question and answer must be strictly grounded in the excerpts provided.\n"
+        "- Every question and answer must be strictly grounded in its corresponding excerpt.\n"
         "- Do NOT introduce external facts or guess beyond what is explicitly stated.\n"
         "- Provide clear, concise answers.\n"
-        "- Cite the exact excerpt source filename and page numbers for each question.\n"
-        "- Output your entire response as a single valid JSON array of objects with keys: "
-        '"question", "answer", and "source" (with "filename", "page_start", "page_end").\n\n'
+        "- Output your response as a single valid JSON array of objects with keys 'excerpt', 'question', and 'answer'.\n\n"
         "Required JSON Output Format:\n"
         "[\n"
         "  {\n"
-        '    "question": "What is the function of ...?",\n'
-        '    "answer": "It is used to ...",\n'
-        '    "source": {\n'
-        '      "filename": "chapter_1.pdf",\n'
-        '      "page_start": 4,\n'
-        '      "page_end": 4\n'
-        "    }\n"
+        '    "excerpt": 1,\n'
+        '    "question": "What is ...?",\n'
+        '    "answer": "It is ..."\n'
+        "  },\n"
+        "  {\n"
+        '    "excerpt": 2,\n'
+        '    "question": "How do you ...?",\n'
+        '    "answer": "By ..."\n'
         "  }\n"
         "]\n\n"
         f"--- Chapter Excerpts ---\n{context_str}\n\n"
@@ -105,7 +109,31 @@ def build_quiz_prompt(chunks: list[dict[str, Any]], num_questions: int = 5) -> s
     )
 
 
-def parse_quiz_response(raw_response: str) -> list[dict[str, Any]]:
+def extract_excerpt_index(item: dict[str, Any]) -> int | None:
+    """Extract a 1-based excerpt index from a quiz item if specified by the LLM."""
+    raw = item.get("excerpt")
+    if raw is None and "source" in item:
+        raw = item.get("source")
+
+    if isinstance(raw, int):
+        return raw
+
+    if isinstance(raw, str):
+        match = re.search(r"(?:excerpt\s*)?(\d+)", raw, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+
+    if isinstance(raw, dict):
+        if "excerpt" in raw and isinstance(raw["excerpt"], int):
+            return raw["excerpt"]
+
+    return None
+
+
+def parse_quiz_response(
+    raw_response: str,
+    chunks: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Parse and validate JSON response from the LLM into structured quiz items."""
     text = raw_response.strip()
 
@@ -127,30 +155,41 @@ def parse_quiz_response(raw_response: str) -> list[dict[str, Any]]:
     if not isinstance(data, list):
         raise ValueError(f"Expected a JSON array of quiz items, got: {type(data)}")
 
+    chunk_list = chunks or []
     quiz_items = []
-    for item in data:
+    for i, item in enumerate(data):
         if not isinstance(item, dict):
             continue
         question = str(item.get("question", "")).strip()
         answer = str(item.get("answer", "")).strip()
-        source_data = item.get("source") or {}
-        if not isinstance(source_data, dict):
-            source_data = {}
+
+        if not question or not answer:
+            continue
+
+        # Deterministic source resolution via Python:
+        # 1. Check if model provided a valid excerpt index
+        excerpt_idx = extract_excerpt_index(item)
+        if excerpt_idx is not None and 1 <= excerpt_idx <= len(chunk_list):
+            target_chunk = chunk_list[excerpt_idx - 1]
+        elif chunk_list:
+            # 2. Positional fallback: question i maps to chunk i
+            target_chunk = chunk_list[i % len(chunk_list)]
+        else:
+            target_chunk = {}
 
         source = {
-            "filename": str(source_data.get("filename", "")),
-            "page_start": int(source_data.get("page_start", 0)),
-            "page_end": int(source_data.get("page_end", 0)),
+            "filename": str(target_chunk.get("filename", "")),
+            "page_start": int(target_chunk.get("page_start", 0)),
+            "page_end": int(target_chunk.get("page_end", 0)),
         }
 
-        if question and answer:
-            quiz_items.append(
-                {
-                    "question": question,
-                    "answer": answer,
-                    "source": source,
-                }
-            )
+        quiz_items.append(
+            {
+                "question": question,
+                "answer": answer,
+                "source": source,
+            }
+        )
 
     return quiz_items
 
@@ -203,7 +242,7 @@ def generate_quiz(
         )
 
     chunks = [dict(row) for row in rows]
-    selected_chunks = select_quiz_chunks(chunks)
+    selected_chunks = select_quiz_chunks(chunks, num_questions=num_questions)
 
     prompt = build_quiz_prompt(selected_chunks, num_questions=num_questions)
     ollama_client = client or OllamaClient()
@@ -215,4 +254,6 @@ def generate_quiz(
         options=gen_options,
     )
 
-    return parse_quiz_response(raw_response)
+    return parse_quiz_response(raw_response, chunks=selected_chunks)
+
+
