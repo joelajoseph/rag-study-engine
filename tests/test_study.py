@@ -131,7 +131,9 @@ class TestQuizGeneration(unittest.TestCase):
         self.assertIn("[Excerpt 2: ch1.pdf, pages 4-5]", prompt)
         self.assertIn("Pointers hold addresses.", prompt)
         self.assertIn("Required JSON Output Format", prompt)
-
+        self.assertIn("The topic must name only what this specific excerpt discusses", prompt)
+        self.assertIn("Every question must be completely self-contained", prompt)
+        self.assertIn("Do NOT copy or reuse placeholder text", prompt)
 
     def test_extract_excerpt_index(self) -> None:
         self.assertEqual(extract_excerpt_index({"excerpt": 2}), 2)
@@ -173,9 +175,9 @@ class TestQuizGeneration(unittest.TestCase):
 
     def test_parse_quiz_response_with_topics(self) -> None:
         chunks = [
-            {"document_id": 1, "filename": "chapter_1.pdf", "page_start": 1, "page_end": 2},
-            {"document_id": 1, "filename": "chapter_1.pdf", "page_start": 4, "page_end": 5},
-            {"document_id": 1, "filename": "chapter_1.pdf", "page_start": 8, "page_end": 9},
+            {"document_id": 1, "filename": "chapter_1.pdf", "page_start": 1, "page_end": 2, "chunk_text": "Pointers and memory addresses."},
+            {"document_id": 1, "filename": "chapter_1.pdf", "page_start": 4, "page_end": 5, "chunk_text": "Dynamic memory allocation with malloc."},
+            {"document_id": 1, "filename": "chapter_1.pdf", "page_start": 8, "page_end": 9, "chunk_text": "Freeing allocated memory."},
         ]
         raw = json.dumps(
             [
@@ -206,6 +208,62 @@ class TestQuizGeneration(unittest.TestCase):
         self.assertIsNone(items[1]["topic"])
         self.assertIsNone(items[2]["topic"])
 
+    def test_parse_quiz_response_ungrounded_topic_backstop(self) -> None:
+        """Excerpt with no mention of pointers nulls 'Pointer Basics' via keyword overlap backstop."""
+        chunks = [
+            {
+                "document_id": 1,
+                "filename": "chapter_1.pdf",
+                "page_start": 1,
+                "page_end": 2,
+                "chunk_text": "Variables in C store numbers like int x = 5; or floats.",
+            }
+        ]
+        raw = json.dumps(
+            [
+                {
+                    "excerpt": 1,
+                    "topic": "Pointer Basics",  # Hallucinated: "pointer" / "basics" not in chunk_text
+                    "question": "What does an int variable store?",
+                    "answer": "Integer numbers.",
+                }
+            ]
+        )
+        items = parse_quiz_response(raw, chunks=chunks)
+        self.assertEqual(len(items), 1)
+        # Question and answer are preserved
+        self.assertEqual(items[0]["question"], "What does an int variable store?")
+        self.assertEqual(items[0]["answer"], "Integer numbers.")
+        # Topic is nulled out due to zero keyword overlap
+        self.assertIsNone(items[0]["topic"])
+
+    def test_parse_quiz_response_placeholder_topic_rejected(self) -> None:
+        """Verbatim schema placeholder topic strings are rejected."""
+        chunks = [
+            {
+                "document_id": 1,
+                "filename": "chapter_1.pdf",
+                "page_start": 1,
+                "page_end": 2,
+                "chunk_text": "Introduction to computer science concepts.",
+            }
+        ]
+        for placeholder in ("<short topic label>", "Concept Name", "Another Concept", "<topic>", "none", "N/A"):
+            raw = json.dumps(
+                [
+                    {
+                        "excerpt": 1,
+                        "topic": placeholder,
+                        "question": "What is CS?",
+                        "answer": "Computer science.",
+                    }
+                ]
+            )
+            items = parse_quiz_response(raw, chunks=chunks)
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["question"], "What is CS?")
+            self.assertIsNone(items[0]["topic"], f"Placeholder '{placeholder}' should have been nulled.")
+
     def test_parse_quiz_response_positional_fallback(self) -> None:
         chunks = [
             {"filename": "chapter_1.pdf", "page_start": 1, "page_end": 2},
@@ -225,7 +283,7 @@ class TestQuizGeneration(unittest.TestCase):
         self.assertEqual(items[1]["source"], {"document_id": None, "filename": "chapter_1.pdf", "page_start": 6, "page_end": 7})
 
     def test_parse_quiz_response_code_fence(self) -> None:
-        chunks = [{"filename": "ch1.pdf", "page_start": 2, "page_end": 2}]
+        chunks = [{"filename": "ch1.pdf", "page_start": 2, "page_end": 2, "chunk_text": "A pointer is a variable holding an address."}]
         raw = (
             "Here is the quiz:\n"
             "```json\n"

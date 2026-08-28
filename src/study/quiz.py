@@ -71,6 +71,75 @@ def select_quiz_chunks(
     return selected
 
 
+# Stopwords for topic keyword-grounding check
+STOPWORDS: set[str] = {
+    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and",
+    "any", "are", "aren't", "as", "at", "be", "because", "been", "before", "being",
+    "below", "between", "both", "but", "by", "can", "can't", "cannot", "could",
+    "couldn't", "did", "didn't", "do", "does", "doesn't", "doing", "don't", "down",
+    "during", "each", "few", "for", "from", "further", "had", "hadn't", "has",
+    "hasn't", "have", "haven't", "having", "he", "he'd", "he'll", "he's", "her",
+    "here", "here's", "hers", "herself", "him", "himself", "his", "how", "how's",
+    "i", "i'd", "i'll", "i'm", "i've", "if", "in", "into", "is", "isn't", "it",
+    "it's", "its", "itself", "let's", "me", "more", "most", "mustn't", "my",
+    "myself", "no", "nor", "not", "of", "off", "on", "once", "only", "or",
+    "other", "ought", "our", "ours", "ourselves", "out", "over", "own", "same",
+    "shan't", "she", "she'd", "she'll", "she's", "should", "shouldn't", "so",
+    "some", "such", "than", "that", "that's", "the", "their", "theirs", "them",
+    "themselves", "then", "there", "there's", "these", "they", "they'd", "they'll",
+    "they're", "they've", "this", "those", "through", "to", "too", "under", "until",
+    "up", "very", "was", "wasn't", "we", "we'd", "we'll", "we're", "we've",
+    "were", "weren't", "what", "what's", "when", "when's", "where", "where's",
+    "which", "while", "who", "who's", "whom", "why", "why's", "with", "won't",
+    "would", "wouldn't", "you", "you'd", "you'll", "you're", "you've", "your",
+    "yours", "yourself", "yourselves",
+}
+
+# Explicit placeholder topic strings that should never be saved
+REJECTED_TOPIC_PLACEHOLDERS: set[str] = {
+    "<short topic label>",
+    "short topic label",
+    "concept name",
+    "another concept",
+    "topic label",
+    "topic",
+    "none",
+    "n/a",
+    "null",
+}
+
+
+def is_topic_grounded(topic: str, excerpt_text: str) -> bool:
+    """Check whether a topic has meaningful keyword overlap with excerpt text (case-insensitive)."""
+    if not topic or not excerpt_text:
+        return False
+
+    cleaned_topic = topic.strip().lower()
+    if cleaned_topic in REJECTED_TOPIC_PLACEHOLDERS or (
+        cleaned_topic.startswith("<") and cleaned_topic.endswith(">")
+    ):
+        return False
+
+    # Extract alphanumeric tokens of length >= 2
+    topic_tokens = re.findall(r"\b[a-zA-Z0-9_]+\b", cleaned_topic)
+    content_tokens = [t for t in topic_tokens if t not in STOPWORDS and len(t) >= 2]
+    if not content_tokens:
+        return False
+
+    excerpt_tokens = set(re.findall(r"\b[a-zA-Z0-9_]+\b", excerpt_text.lower()))
+
+    for token in content_tokens:
+        if token in excerpt_tokens:
+            return True
+        # Match singular/plural or stem variations (e.g. pointer vs pointers)
+        if len(token) >= 3:
+            stem = token.rstrip("s")
+            if any(et.startswith(stem) or stem in et for et in excerpt_tokens if len(et) >= 3):
+                return True
+
+    return False
+
+
 def build_quiz_prompt(chunks: list[dict[str, Any]], num_questions: int = 5) -> str:
     """Build a prompt instructing the LLM to generate grounded quiz questions."""
     context_blocks = []
@@ -90,19 +159,22 @@ def build_quiz_prompt(chunks: list[dict[str, Any]], num_questions: int = 5) -> s
         "- Every question and answer must be strictly grounded in its corresponding excerpt.\n"
         "- Do NOT introduce external facts or guess beyond what is explicitly stated.\n"
         "- Provide a short, informal topic label (1-4 words) describing the concept tested.\n"
+        "- The topic must name only what this specific excerpt discusses. Do not use general CS curriculum terms (e.g. common textbook topics) unless the underlying concept is actually present in the excerpt text.\n"
+        "- Do NOT copy or reuse placeholder text from the format example (do not output '<short topic label>' or 'Concept Name').\n"
+        "- Every question must be completely self-contained. If asking about a code snippet, table, or specific syntax from the excerpt, reproduce that code snippet or text directly inside the question string. Do NOT refer to 'the code above', 'the code below', or 'the excerpt' without including the actual code or content in the question.\n"
         "- Provide clear, concise answers.\n"
         "- Output your response as a single valid JSON array of objects with keys 'excerpt', 'topic', 'question', and 'answer'.\n\n"
         "Required JSON Output Format:\n"
         "[\n"
         "  {\n"
         '    "excerpt": 1,\n'
-        '    "topic": "Pointer Basics",\n'
+        '    "topic": "<short topic label>",\n'
         '    "question": "What is ...?",\n'
         '    "answer": "It is ..."\n'
         "  },\n"
         "  {\n"
         '    "excerpt": 2,\n'
-        '    "topic": "Dynamic Allocation",\n'
+        '    "topic": "<short topic label>",\n'
         '    "question": "How do you ...?",\n'
         '    "answer": "By ..."\n'
         "  }\n"
@@ -169,9 +241,16 @@ def parse_quiz_response(
         if not question or not answer:
             continue
 
-        # Informal topic parsing (soft-failure: keep question if topic is missing or invalid)
+        # Informal topic parsing (soft-failure: keep question if topic is missing, placeholder, or invalid)
         raw_topic = item.get("topic")
         topic = raw_topic.strip() if isinstance(raw_topic, str) and raw_topic.strip() else None
+
+        if topic:
+            cleaned_topic = topic.lower()
+            if cleaned_topic in REJECTED_TOPIC_PLACEHOLDERS or (
+                cleaned_topic.startswith("<") and cleaned_topic.endswith(">")
+            ):
+                topic = None
 
         # Deterministic source resolution via Python:
         # 1. Check if model provided a valid excerpt index
@@ -183,6 +262,11 @@ def parse_quiz_response(
             target_chunk = chunk_list[i % len(chunk_list)]
         else:
             target_chunk = {}
+
+        # Keyword-overlap backstop: verify topic is grounded in the source chunk text
+        chunk_text = str(target_chunk.get("chunk_text", "")).strip()
+        if topic and chunk_text and not is_topic_grounded(topic, chunk_text):
+            topic = None
 
         source = {
             "document_id": target_chunk.get("document_id"),
